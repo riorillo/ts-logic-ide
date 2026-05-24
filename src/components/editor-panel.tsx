@@ -4,7 +4,11 @@ import type { editor } from 'monaco-editor'
 import { DEFAULT_EXAMPLE_ID, EXAMPLES } from '../examples/catalog'
 import { invalidAssertLines, loopK, setLoopK, setSource, source, state, verify } from '../stores/verification-store'
 
-export const EditorPanel: Component = () => {
+interface Props {
+  compact?: boolean
+}
+
+export const EditorPanel: Component<Props> = (props) => {
   const [exampleId, setExampleId] = createSignal(DEFAULT_EXAMPLE_ID)
   let editorRef: editor.IStandaloneCodeEditor | undefined
   let decorationIds: string[] = []
@@ -38,15 +42,15 @@ export const EditorPanel: Component = () => {
   })
 
   return (
-    <div class="editor-panel">
+    <>
       <div class="toolbar">
         <div class="toolbar-left">
           <h1>TS Logic IDE</h1>
-          <span class="subtitle">TypeScript subset → Z3 SMT</span>
+          <span class="subtitle">TypeScript → Z3 SMT</span>
         </div>
-        <div class="toolbar-right">
+        <div class="toolbar-controls">
           <label class="example-control">
-            Esempio
+            <span class="control-label">Esempio</span>
             <select
               value={exampleId()}
               onChange={(e) => loadExample(e.currentTarget.value)}
@@ -58,7 +62,7 @@ export const EditorPanel: Component = () => {
             </select>
           </label>
           <label class="k-control">
-            Bound K
+            <span class="control-label">K</span>
             <input
               type="number"
               min={1}
@@ -74,7 +78,13 @@ export const EditorPanel: Component = () => {
             onClick={() => void verify()}
             disabled={state.status === 'solving' || state.status === 'parsing'}
           >
-            {state.status === 'solving' ? 'Solving…' : state.status === 'parsing' ? 'Parsing…' : '▶ Verify'}
+            {state.status === 'solving'
+              ? '…'
+              : state.status === 'parsing'
+                ? '…'
+                : props.compact
+                  ? 'Verify'
+                  : '▶ Verify'}
           </button>
           <span class={`status-badge status-${state.status}`}>{state.status}</span>
         </div>
@@ -87,16 +97,18 @@ export const EditorPanel: Component = () => {
           onChange={(value) => setSource(value)}
           options={{
             minimap: { enabled: false },
-            fontSize: 14,
+            fontSize: props.compact ? 13 : 14,
             scrollBeyondLastLine: false,
             automaticLayout: true,
-            glyphMargin: true,
+            glyphMargin: !props.compact,
+            lineNumbersMinChars: props.compact ? 2 : 3,
+            padding: { top: 8, bottom: 8 },
           }}
           onMount={(_monaco, ed) => {
             editorRef = ed
           }}
         />
       </div>
-    </div>
+    </>
   )
 }
