@@ -27,7 +27,7 @@ async function yieldToEventLoop() {
 }
 
 async function solverCheck(solver: SolverLike): Promise<string> {
-  const status = await solverCheck(solver)
+  const status = await solver.check()
   await yieldToEventLoop()
   return status
 }

@@ -11,7 +11,7 @@
     }
   }
   async function solverCheck(solver) {
-    const status = await solverCheck(solver);
+    const status = await solver.check();
     await yieldToEventLoop();
     return status;
   }
