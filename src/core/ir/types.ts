@@ -113,6 +113,44 @@ export interface VerifyPayload {
   finalVarNames: string[]
 }
 
+/** Compact form for the Z3 worker (deduplicated S-expressions, no debug strings). */
+export interface IndexedAssertQuery {
+  line: number
+  assumptionIndices: number[]
+  constraintIndices: number[]
+  assertionIndex: number
+  label: string
+}
+
+export interface IndexedDomainQuery {
+  line: number
+  variable: string
+  ssaName: string
+  assumptionIndices: number[]
+  constraintIndices: number[]
+  conditionIndex: number
+  label: string
+}
+
+export interface IndexedFunctionCheckQuery {
+  name: string
+  line: number
+  param: string
+  paramSsaName: string
+  paramMin: number
+  paramMax: number
+  assumptionIndices: number[]
+  constraintIndices: number[]
+  assertQueries: IndexedAssertQuery[]
+}
+
+export interface WorkerVerifyPayload {
+  pool: SExpr[]
+  queries: IndexedAssertQuery[]
+  domainQueries: IndexedDomainQuery[]
+  functionQueries: IndexedFunctionCheckQuery[]
+}
+
 export interface AssertResult {
   line: number
   valid: boolean

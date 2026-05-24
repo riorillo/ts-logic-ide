@@ -3,187 +3,204 @@
   var MAX_DOMAIN_VALUES = 32;
 
   // src/core/solver/encode.ts
-  async function checkAssertValid(ctx, buildBool, query, extra = []) {
-    const Solver = ctx.Solver;
-    const solver = new Solver();
-    for (const assumption of query.assumptions) solver.add(buildBool(assumption));
-    for (const constraint of query.constraints) solver.add(buildBool(constraint));
-    for (const e of extra) solver.add(e);
-    const notAssert = buildBool(query.assertion).not();
-    solver.add(notAssert);
-    return await solver.check() === "unsat";
+  var solverChecks = 0;
+  async function yieldToEventLoop() {
+    solverChecks++;
+    if (solverChecks % 48 === 0) {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
   }
-  async function solveVerification(z3, payload) {
-    const queries = payload.queries ?? [];
-    const domainQueries = payload.domainQueries ?? [];
-    const functionQueries = payload.functionQueries ?? [];
-    const ctx = new z3.Context("main");
-    const Int = ctx.Int;
-    const Bool = ctx.Bool;
-    const If = ctx.If;
-    const SolverCtor = ctx.Solver;
-    const intSymbols = /* @__PURE__ */ new Map();
-    const boolSymbols = /* @__PURE__ */ new Map();
-    const intConst = (name) => {
-      if (!intSymbols.has(name)) intSymbols.set(name, Int.const(name));
-      return intSymbols.get(name);
-    };
-    const boolConst = (name) => {
-      if (!boolSymbols.has(name)) boolSymbols.set(name, Bool.const(name));
-      return boolSymbols.get(name);
-    };
-    const buildArith = (expr) => {
+  async function solverCheck(solver) {
+    const status = await solverCheck(solver);
+    await yieldToEventLoop();
+    return status;
+  }
+  var Z3Env = class {
+    ctx;
+    Int;
+    Bool;
+    If;
+    Solver;
+    pool;
+    boolCache = /* @__PURE__ */ new Map();
+    arithCache = /* @__PURE__ */ new Map();
+    intSymbols = /* @__PURE__ */ new Map();
+    boolSymbols = /* @__PURE__ */ new Map();
+    constructor(z3, pool) {
+      this.pool = pool;
+      this.ctx = new z3.Context("main");
+      const ctx = this.ctx;
+      this.Int = ctx.Int;
+      this.Bool = ctx.Bool;
+      this.If = ctx.If;
+      this.Solver = ctx.Solver;
+      for (const expr of pool) this.visit(expr);
+    }
+    buildBoolAt(index) {
+      const cached = this.boolCache.get(index);
+      if (cached !== void 0) return cached;
+      const built = this.buildBool(this.pool[index]);
+      this.boolCache.set(index, built);
+      return built;
+    }
+    buildArithAt(index) {
+      const cached = this.arithCache.get(index);
+      if (cached !== void 0) return cached;
+      const built = this.buildArith(this.pool[index]);
+      this.arithCache.set(index, built);
+      return built;
+    }
+    buildBoolList(indices) {
+      return indices.map((i) => this.buildBoolAt(i));
+    }
+    modelValues(model) {
+      const values = {};
+      for (const [name, sym] of this.intSymbols) values[name] = String(model.eval(sym, true));
+      for (const [name, sym] of this.boolSymbols) values[name] = String(model.eval(sym, true));
+      return values;
+    }
+    intConst(name) {
+      if (!this.intSymbols.has(name)) this.intSymbols.set(name, this.Int.const(name));
+      return this.intSymbols.get(name);
+    }
+    boolConst(name) {
+      if (!this.boolSymbols.has(name)) this.boolSymbols.set(name, this.Bool.const(name));
+      return this.boolSymbols.get(name);
+    }
+    visit(expr) {
+      if (expr.op === "const") {
+        if (expr.sort === "int") this.intConst(expr.name);
+        else this.boolConst(expr.name);
+        return;
+      }
+      switch (expr.op) {
+        case "not":
+          this.visit(expr.arg);
+          break;
+        case "and":
+        case "or":
+        case "add":
+        case "mul":
+          expr.args.forEach((a) => this.visit(a));
+          break;
+        case "eq":
+        case "sub":
+        case "div":
+        case "gt":
+        case "lt":
+        case "gte":
+        case "lte":
+          this.visit(expr.left);
+          this.visit(expr.right);
+          break;
+        case "ite":
+          this.visit(expr.cond);
+          this.visit(expr.then);
+          this.visit(expr.else);
+          break;
+      }
+    }
+    buildArith(expr) {
       const ar = (e) => e;
       switch (expr.op) {
         case "const":
           if (expr.sort !== "int") throw new Error(`Expected int symbol ${expr.name}`);
-          return intConst(expr.name);
+          return this.intConst(expr.name);
         case "int":
-          return Int.val(expr.value);
+          return this.Int.val(expr.value);
         case "add":
-          return expr.args.map(buildArith).reduce((a, b) => ar(a).add(b));
+          return expr.args.map((a) => this.buildArith(a)).reduce((a, b) => ar(a).add(b));
         case "sub":
-          return ar(buildArith(expr.left)).sub(buildArith(expr.right));
+          return ar(this.buildArith(expr.left)).sub(this.buildArith(expr.right));
         case "mul":
-          return expr.args.map(buildArith).reduce((a, b) => ar(a).mul(b));
+          return expr.args.map((a) => this.buildArith(a)).reduce((a, b) => ar(a).mul(b));
         case "div":
-          return ar(buildArith(expr.left)).div(buildArith(expr.right));
+          return ar(this.buildArith(expr.left)).div(this.buildArith(expr.right));
         case "ite":
-          return If(buildBool(expr.cond), buildArith(expr.then), buildArith(expr.else));
+          return this.If(this.buildBool(expr.cond), this.buildArith(expr.then), this.buildArith(expr.else));
         default:
           throw new Error(`Not an arithmetic expression: ${expr.op}`);
       }
-    };
-    const buildBool = (expr) => {
+    }
+    buildBool(expr) {
       const bl = (e) => e;
       const ar = (e) => e;
       switch (expr.op) {
         case "const":
           if (expr.sort !== "bool") throw new Error(`Expected bool symbol ${expr.name}`);
-          return boolConst(expr.name);
+          return this.boolConst(expr.name);
         case "bool":
-          return Bool.val(expr.value);
+          return this.Bool.val(expr.value);
         case "not":
-          return bl(buildBool(expr.arg)).not();
+          return bl(this.buildBool(expr.arg)).not();
         case "and":
-          return expr.args.map(buildBool).reduce((a, b) => bl(a).and(b));
+          return expr.args.map((a) => this.buildBool(a)).reduce((a, b) => bl(a).and(b));
         case "or":
-          return expr.args.map(buildBool).reduce((a, b) => bl(a).or(b));
+          return expr.args.map((a) => this.buildBool(a)).reduce((a, b) => bl(a).or(b));
         case "eq":
           if (isIntExpr(expr.left) && isIntExpr(expr.right)) {
-            return ar(buildArith(expr.left)).eq(buildArith(expr.right));
+            return ar(this.buildArith(expr.left)).eq(this.buildArith(expr.right));
           }
-          return bl(buildBool(expr.left)).eq(buildBool(expr.right));
+          return bl(this.buildBool(expr.left)).eq(this.buildBool(expr.right));
         case "gt":
-          return ar(buildArith(expr.left)).gt(buildArith(expr.right));
+          return ar(this.buildArith(expr.left)).gt(this.buildArith(expr.right));
         case "lt":
-          return ar(buildArith(expr.left)).lt(buildArith(expr.right));
+          return ar(this.buildArith(expr.left)).lt(this.buildArith(expr.right));
         case "gte":
-          return ar(buildArith(expr.left)).ge(buildArith(expr.right));
+          return ar(this.buildArith(expr.left)).ge(this.buildArith(expr.right));
         case "lte":
-          return ar(buildArith(expr.left)).le(buildArith(expr.right));
+          return ar(this.buildArith(expr.left)).le(this.buildArith(expr.right));
         case "ite":
-          return If(buildBool(expr.cond), buildBool(expr.then), buildBool(expr.else));
+          return this.If(this.buildBool(expr.cond), this.buildBool(expr.then), this.buildBool(expr.else));
         default:
           throw new Error(`Not a boolean expression: ${expr.op}`);
       }
-    };
-    const visit = (expr) => {
-      if (expr.op === "const") {
-        if (expr.sort === "int") intConst(expr.name);
-        else boolConst(expr.name);
-        return;
-      }
-      switch (expr.op) {
-        case "not":
-          visit(expr.arg);
-          break;
-        case "and":
-        case "or":
-        case "add":
-        case "mul":
-          expr.args.forEach(visit);
-          break;
-        case "eq":
-        case "sub":
-        case "div":
-        case "gt":
-        case "lt":
-        case "gte":
-        case "lte":
-          visit(expr.left);
-          visit(expr.right);
-          break;
-        case "ite":
-          visit(expr.cond);
-          visit(expr.then);
-          visit(expr.else);
-          break;
-      }
-    };
-    for (const query of queries) {
-      query.assumptions.forEach(visit);
-      query.constraints.forEach(visit);
-      visit(query.assertion);
     }
-    for (const query of domainQueries) {
-      query.assumptions.forEach(visit);
-      query.constraints.forEach(visit);
-      visit(query.condition);
-      intConst(query.ssaName);
-    }
-    for (const fq of functionQueries) {
-      fq.assumptions.forEach(visit);
-      fq.constraints.forEach(visit);
-      fq.assertQueries.forEach((q) => {
-        q.assumptions.forEach(visit);
-        q.constraints.forEach(visit);
-        visit(q.assertion);
-      });
-      intConst(fq.paramSsaName);
-    }
-    const modelValues = (model) => {
-      const values = {};
-      for (const [name, sym] of intSymbols) values[name] = String(model.eval(sym, true));
-      for (const [name, sym] of boolSymbols) values[name] = String(model.eval(sym, true));
-      return values;
-    };
+  };
+  function addToSolver(solver, exprs) {
+    for (const e of exprs) solver.add(e);
+  }
+  async function checkAssertQuery(env, query, extra = []) {
+    const solver = new env.Solver();
+    addToSolver(solver, env.buildBoolList(query.assumptionIndices));
+    addToSolver(solver, env.buildBoolList(query.constraintIndices));
+    addToSolver(solver, extra);
+    const notAssert = env.buildBoolAt(query.assertionIndex).not();
+    solver.add(notAssert);
+    const status = await solverCheck(solver);
+    if (status === "unsat") return { valid: true, status: "valid" };
+    if (status === "sat") return { valid: false, status: "invalid", counterexample: env.modelValues(solver.model()) };
+    return { valid: false, status: "unknown" };
+  }
+  async function solveVerification(z3, payload) {
+    solverChecks = 0;
+    const env = new Z3Env(z3, payload.pool ?? []);
+    const queries = payload.queries ?? [];
+    const domainQueries = payload.domainQueries ?? [];
+    const functionQueries = payload.functionQueries ?? [];
     const assertResults = [];
     for (const query of queries) {
-      const valid = await checkAssertValid(ctx, buildBool, query);
-      if (valid) {
-        assertResults.push({ line: query.line, valid: true, status: "valid", label: query.label });
-      } else {
-        const solver = new SolverCtor();
-        for (const assumption of query.assumptions) solver.add(buildBool(assumption));
-        for (const constraint of query.constraints) solver.add(buildBool(constraint));
-        solver.add(buildBool(query.assertion).not());
-        const status = await solver.check();
-        if (status === "sat") {
-          assertResults.push({
-            line: query.line,
-            valid: false,
-            status: "invalid",
-            counterexample: modelValues(solver.model()),
-            label: query.label
-          });
-        } else {
-          assertResults.push({ line: query.line, valid: false, status: "unknown", label: query.label });
-        }
-      }
+      const outcome = await checkAssertQuery(env, query);
+      assertResults.push({
+        line: query.line,
+        valid: outcome.valid,
+        status: outcome.status,
+        counterexample: outcome.counterexample,
+        label: query.label
+      });
     }
     const domainResults = [];
     for (const query of domainQueries) {
-      const sym = intConst(query.ssaName);
+      const sym = env.intConst(query.ssaName);
       const symAr = sym;
       const values = [];
-      const solver = new SolverCtor();
-      for (const assumption of query.assumptions) solver.add(buildBool(assumption));
-      for (const constraint of query.constraints) solver.add(buildBool(constraint));
-      solver.add(buildBool(query.condition));
+      const solver = new env.Solver();
+      addToSolver(solver, env.buildBoolList(query.assumptionIndices));
+      addToSolver(solver, env.buildBoolList(query.constraintIndices));
+      solver.add(env.buildBoolAt(query.conditionIndex));
       let truncated = false;
       for (let i = 0; i < MAX_DOMAIN_VALUES; i++) {
-        const status = await solver.check();
+        const status = await solverCheck(solver);
         if (status !== "sat") break;
         const val = solver.model().eval(sym, true);
         values.push(String(val));
@@ -201,34 +218,44 @@
     const functionResults = [];
     for (const fq of functionQueries) {
       const assertQueries = fq.assertQueries ?? [];
-      const paramSym = intConst(fq.paramSsaName);
+      const paramSym = env.intConst(fq.paramSsaName);
       const paramAr = paramSym;
       const validInputs = [];
-      for (let v = fq.paramMin; v <= fq.paramMax; v++) {
-        const pin = paramAr.eq(Int.val(v));
-        const solver = new SolverCtor();
-        for (const assumption of fq.assumptions) solver.add(buildBool(assumption));
-        for (const constraint of fq.constraints) solver.add(buildBool(constraint));
-        solver.add(pin);
-        if (await solver.check() === "unsat") continue;
-        let allValid = assertQueries.length === 0;
-        for (const aq of assertQueries) {
-          if (!await checkAssertValid(ctx, buildBool, aq, [pin])) {
-            allValid = false;
-            break;
-          }
-        }
-        if (allValid) validInputs.push(String(v));
-      }
+      const baseAssumes = env.buildBoolList(fq.assumptionIndices);
+      const baseConstraints = env.buildBoolList(fq.constraintIndices);
       const fnAssertResults = [];
       for (const aq of assertQueries) {
-        const valid = await checkAssertValid(ctx, buildBool, aq);
+        const outcome = await checkAssertQuery(env, aq);
         fnAssertResults.push({
           line: aq.line,
-          valid,
-          status: valid ? "valid" : "invalid",
+          valid: outcome.valid,
+          status: outcome.status,
           label: `[${fq.name}] ${aq.label}`
         });
+      }
+      const baseSolver = new env.Solver();
+      addToSolver(baseSolver, baseAssumes);
+      addToSolver(baseSolver, baseConstraints);
+      for (let v = fq.paramMin; v <= fq.paramMax; v++) {
+        const pin = paramAr.eq(env.Int.val(v));
+        baseSolver.push();
+        baseSolver.add(pin);
+        if (await solverCheck(baseSolver) === "unsat") {
+          baseSolver.pop();
+          continue;
+        }
+        let allValid = assertQueries.length === 0;
+        if (!allValid) {
+          for (const aq of assertQueries) {
+            const outcome = await checkAssertQuery(env, aq, [pin]);
+            if (!outcome.valid) {
+              allValid = false;
+              break;
+            }
+          }
+        }
+        baseSolver.pop();
+        if (allValid) validInputs.push(String(v));
       }
       functionResults.push({
         name: fq.name,
@@ -241,20 +268,20 @@
     }
     let finalModel;
     if (queries.length > 0) {
-      const solver = new SolverCtor();
       const last = queries[queries.length - 1];
-      for (const assumption of last.assumptions) solver.add(buildBool(assumption));
-      for (const constraint of last.constraints) solver.add(buildBool(constraint));
-      const status = await solver.check();
-      if (status === "sat") finalModel = modelValues(solver.model());
+      const solver = new env.Solver();
+      addToSolver(solver, env.buildBoolList(last.assumptionIndices));
+      addToSolver(solver, env.buildBoolList(last.constraintIndices));
+      const status = await solverCheck(solver);
+      if (status === "sat") finalModel = env.modelValues(solver.model());
     }
     return {
       assertResults,
       domainResults,
       functionResults,
       finalModel,
-      debugConstraints: payload.debugConstraints ?? [],
-      loopTrace: payload.loopTrace ?? []
+      debugConstraints: [],
+      loopTrace: []
     };
   }
   function isIntExpr(expr) {

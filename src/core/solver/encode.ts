@@ -1,236 +1,253 @@
 import { MAX_DOMAIN_VALUES } from '../constraints/constraint-builder'
 import type {
-  AssertQuery,
+  IndexedAssertQuery,
   SExpr,
-  VerifyPayload,
   VerifyResult,
+  WorkerVerifyPayload,
 } from '../ir/types'
 import type { Z3HighLevel } from 'z3-solver'
 
-// z3-solver generics (Context<"main"> vs Context<string>) fight TS; use unknown at boundaries.
 type Z3Any = unknown
 
-async function checkAssertValid(
-  ctx: Z3Any,
-  buildBool: (expr: SExpr) => Z3Any,
-  query: AssertQuery,
-  extra: Z3Any[] = [],
-): Promise<boolean> {
-  const Solver = (ctx as { Solver: new () => { add: (e: Z3Any) => void; check: () => Promise<string> } }).Solver
-  const solver = new Solver()
-  for (const assumption of query.assumptions) solver.add(buildBool(assumption))
-  for (const constraint of query.constraints) solver.add(buildBool(constraint))
-  for (const e of extra) solver.add(e)
-  const notAssert = (buildBool(query.assertion) as { not: () => Z3Any }).not()
-  solver.add(notAssert)
-  return (await solver.check()) === 'unsat'
+type SolverLike = {
+  add: (e: Z3Any) => void
+  check: () => Promise<string>
+  push: () => void
+  pop: (n?: number) => void
+  model: () => { eval: (sym: Z3Any, modelCompletion: boolean) => Z3Any }
 }
 
-export async function solveVerification(z3: Z3HighLevel, payload: VerifyPayload): Promise<VerifyResult> {
-  const queries = payload.queries ?? []
-  const domainQueries = payload.domainQueries ?? []
-  const functionQueries = payload.functionQueries ?? []
+let solverChecks = 0
 
-  const ctx = new z3.Context('main') as Z3Any
-  const Int = (ctx as { Int: { const: (n: string) => Z3Any; val: (v: number) => Z3Any } }).Int
-  const Bool = (ctx as { Bool: { const: (n: string) => Z3Any; val: (v: boolean) => Z3Any } }).Bool
-  const If = (ctx as { If: (c: Z3Any, t: Z3Any, e: Z3Any) => Z3Any }).If
-  const SolverCtor = (ctx as { Solver: new () => {
-    add: (e: Z3Any) => void
-    check: () => Promise<string>
-    model: () => { eval: (sym: Z3Any, modelCompletion: boolean) => Z3Any }
-  } }).Solver
-
-  const intSymbols = new Map<string, Z3Any>()
-  const boolSymbols = new Map<string, Z3Any>()
-
-  const intConst = (name: string): Z3Any => {
-    if (!intSymbols.has(name)) intSymbols.set(name, Int.const(name))
-    return intSymbols.get(name)!
+async function yieldToEventLoop() {
+  solverChecks++
+  if (solverChecks % 48 === 0) {
+    await new Promise<void>((resolve) => setTimeout(resolve, 0))
   }
+}
 
-  const boolConst = (name: string): Z3Any => {
-    if (!boolSymbols.has(name)) boolSymbols.set(name, Bool.const(name))
-    return boolSymbols.get(name)!
-  }
+async function solverCheck(solver: SolverLike): Promise<string> {
+  const status = await solverCheck(solver)
+  await yieldToEventLoop()
+  return status
+}
 
-  const buildArith = (expr: SExpr): Z3Any => {
-    const ar = (e: Z3Any) => e as {
-      add: (o: Z3Any) => Z3Any
-      sub: (o: Z3Any) => Z3Any
-      mul: (o: Z3Any) => Z3Any
-      div: (o: Z3Any) => Z3Any
+class Z3Env {
+  readonly ctx: Z3Any
+  readonly Int: { const: (n: string) => Z3Any; val: (v: number) => Z3Any }
+  readonly Bool: { const: (n: string) => Z3Any; val: (v: boolean) => Z3Any }
+  readonly If: (c: Z3Any, t: Z3Any, e: Z3Any) => Z3Any
+  readonly Solver: new () => SolverLike
+
+  private readonly pool: SExpr[]
+  private readonly boolCache = new Map<number, Z3Any>()
+  private readonly arithCache = new Map<number, Z3Any>()
+  private readonly intSymbols = new Map<string, Z3Any>()
+  private readonly boolSymbols = new Map<string, Z3Any>()
+
+  constructor(z3: Z3HighLevel, pool: SExpr[]) {
+    this.pool = pool
+    this.ctx = new z3.Context('main') as Z3Any
+    const ctx = this.ctx as {
+      Int: Z3Env['Int']
+      Bool: Z3Env['Bool']
+      If: Z3Env['If']
+      Solver: new () => SolverLike
     }
+    this.Int = ctx.Int
+    this.Bool = ctx.Bool
+    this.If = ctx.If
+    this.Solver = ctx.Solver
+
+    for (const expr of pool) this.visit(expr)
+  }
+
+  buildBoolAt(index: number): Z3Any {
+    const cached = this.boolCache.get(index)
+    if (cached !== undefined) return cached
+    const built = this.buildBool(this.pool[index])
+    this.boolCache.set(index, built)
+    return built
+  }
+
+  buildArithAt(index: number): Z3Any {
+    const cached = this.arithCache.get(index)
+    if (cached !== undefined) return cached
+    const built = this.buildArith(this.pool[index])
+    this.arithCache.set(index, built)
+    return built
+  }
+
+  buildBoolList(indices: number[]): Z3Any[] {
+    return indices.map((i) => this.buildBoolAt(i))
+  }
+
+  modelValues(model: { eval: (sym: Z3Any, modelCompletion: boolean) => Z3Any }) {
+    const values: Record<string, string> = {}
+    for (const [name, sym] of this.intSymbols) values[name] = String(model.eval(sym, true))
+    for (const [name, sym] of this.boolSymbols) values[name] = String(model.eval(sym, true))
+    return values
+  }
+
+  intConst(name: string): Z3Any {
+    if (!this.intSymbols.has(name)) this.intSymbols.set(name, this.Int.const(name))
+    return this.intSymbols.get(name)!
+  }
+
+  private boolConst(name: string): Z3Any {
+    if (!this.boolSymbols.has(name)) this.boolSymbols.set(name, this.Bool.const(name))
+    return this.boolSymbols.get(name)!
+  }
+
+  private visit(expr: SExpr) {
+    if (expr.op === 'const') {
+      if (expr.sort === 'int') this.intConst(expr.name)
+      else this.boolConst(expr.name)
+      return
+    }
+    switch (expr.op) {
+      case 'not':
+        this.visit(expr.arg)
+        break
+      case 'and':
+      case 'or':
+      case 'add':
+      case 'mul':
+        expr.args.forEach((a) => this.visit(a))
+        break
+      case 'eq':
+      case 'sub':
+      case 'div':
+      case 'gt':
+      case 'lt':
+      case 'gte':
+      case 'lte':
+        this.visit(expr.left)
+        this.visit(expr.right)
+        break
+      case 'ite':
+        this.visit(expr.cond)
+        this.visit(expr.then)
+        this.visit(expr.else)
+        break
+    }
+  }
+
+  private buildArith(expr: SExpr): Z3Any {
+    const ar = (e: Z3Any) =>
+      e as { add: (o: Z3Any) => Z3Any; sub: (o: Z3Any) => Z3Any; mul: (o: Z3Any) => Z3Any; div: (o: Z3Any) => Z3Any }
     switch (expr.op) {
       case 'const':
         if (expr.sort !== 'int') throw new Error(`Expected int symbol ${expr.name}`)
-        return intConst(expr.name)
+        return this.intConst(expr.name)
       case 'int':
-        return Int.val(expr.value)
+        return this.Int.val(expr.value)
       case 'add':
-        return expr.args.map(buildArith).reduce((a, b) => ar(a).add(b))
+        return expr.args.map((a) => this.buildArith(a)).reduce((a, b) => ar(a).add(b))
       case 'sub':
-        return ar(buildArith(expr.left)).sub(buildArith(expr.right))
+        return ar(this.buildArith(expr.left)).sub(this.buildArith(expr.right))
       case 'mul':
-        return expr.args.map(buildArith).reduce((a, b) => ar(a).mul(b))
+        return expr.args.map((a) => this.buildArith(a)).reduce((a, b) => ar(a).mul(b))
       case 'div':
-        return ar(buildArith(expr.left)).div(buildArith(expr.right))
+        return ar(this.buildArith(expr.left)).div(this.buildArith(expr.right))
       case 'ite':
-        return If(buildBool(expr.cond), buildArith(expr.then), buildArith(expr.else))
+        return this.If(this.buildBool(expr.cond), this.buildArith(expr.then), this.buildArith(expr.else))
       default:
         throw new Error(`Not an arithmetic expression: ${expr.op}`)
     }
   }
 
-  const buildBool = (expr: SExpr): Z3Any => {
-    const bl = (e: Z3Any) => e as {
-      not: () => Z3Any
-      and: (o: Z3Any) => Z3Any
-      or: (o: Z3Any) => Z3Any
-      eq: (o: Z3Any) => Z3Any
-    }
-    const ar = (e: Z3Any) => e as {
-      eq: (o: Z3Any) => Z3Any
-      gt: (o: Z3Any) => Z3Any
-      lt: (o: Z3Any) => Z3Any
-      ge: (o: Z3Any) => Z3Any
-      le: (o: Z3Any) => Z3Any
-    }
+  private buildBool(expr: SExpr): Z3Any {
+    const bl = (e: Z3Any) => e as { not: () => Z3Any; and: (o: Z3Any) => Z3Any; or: (o: Z3Any) => Z3Any; eq: (o: Z3Any) => Z3Any }
+    const ar = (e: Z3Any) => e as { eq: (o: Z3Any) => Z3Any; gt: (o: Z3Any) => Z3Any; lt: (o: Z3Any) => Z3Any; ge: (o: Z3Any) => Z3Any; le: (o: Z3Any) => Z3Any }
     switch (expr.op) {
       case 'const':
         if (expr.sort !== 'bool') throw new Error(`Expected bool symbol ${expr.name}`)
-        return boolConst(expr.name)
+        return this.boolConst(expr.name)
       case 'bool':
-        return Bool.val(expr.value)
+        return this.Bool.val(expr.value)
       case 'not':
-        return bl(buildBool(expr.arg)).not()
+        return bl(this.buildBool(expr.arg)).not()
       case 'and':
-        return expr.args.map(buildBool).reduce((a, b) => bl(a).and(b))
+        return expr.args.map((a) => this.buildBool(a)).reduce((a, b) => bl(a).and(b))
       case 'or':
-        return expr.args.map(buildBool).reduce((a, b) => bl(a).or(b))
+        return expr.args.map((a) => this.buildBool(a)).reduce((a, b) => bl(a).or(b))
       case 'eq':
         if (isIntExpr(expr.left) && isIntExpr(expr.right)) {
-          return ar(buildArith(expr.left)).eq(buildArith(expr.right))
+          return ar(this.buildArith(expr.left)).eq(this.buildArith(expr.right))
         }
-        return bl(buildBool(expr.left)).eq(buildBool(expr.right))
+        return bl(this.buildBool(expr.left)).eq(this.buildBool(expr.right))
       case 'gt':
-        return ar(buildArith(expr.left)).gt(buildArith(expr.right))
+        return ar(this.buildArith(expr.left)).gt(this.buildArith(expr.right))
       case 'lt':
-        return ar(buildArith(expr.left)).lt(buildArith(expr.right))
+        return ar(this.buildArith(expr.left)).lt(this.buildArith(expr.right))
       case 'gte':
-        return ar(buildArith(expr.left)).ge(buildArith(expr.right))
+        return ar(this.buildArith(expr.left)).ge(this.buildArith(expr.right))
       case 'lte':
-        return ar(buildArith(expr.left)).le(buildArith(expr.right))
+        return ar(this.buildArith(expr.left)).le(this.buildArith(expr.right))
       case 'ite':
-        return If(buildBool(expr.cond), buildBool(expr.then), buildBool(expr.else))
+        return this.If(this.buildBool(expr.cond), this.buildBool(expr.then), this.buildBool(expr.else))
       default:
         throw new Error(`Not a boolean expression: ${expr.op}`)
     }
   }
+}
 
-  const visit = (expr: SExpr) => {
-    if (expr.op === 'const') {
-      if (expr.sort === 'int') intConst(expr.name)
-      else boolConst(expr.name)
-      return
-    }
-    switch (expr.op) {
-      case 'not':
-        visit(expr.arg)
-        break
-      case 'and':
-      case 'or':
-      case 'add':
-      case 'mul':
-        expr.args.forEach(visit)
-        break
-      case 'eq':
-      case 'sub':
-      case 'div':
-      case 'gt':
-      case 'lt':
-      case 'gte':
-      case 'lte':
-        visit(expr.left)
-        visit(expr.right)
-        break
-      case 'ite':
-        visit(expr.cond)
-        visit(expr.then)
-        visit(expr.else)
-        break
-    }
-  }
+function addToSolver(solver: SolverLike, exprs: Z3Any[]) {
+  for (const e of exprs) solver.add(e)
+}
 
-  for (const query of queries) {
-    query.assumptions.forEach(visit)
-    query.constraints.forEach(visit)
-    visit(query.assertion)
-  }
-  for (const query of domainQueries) {
-    query.assumptions.forEach(visit)
-    query.constraints.forEach(visit)
-    visit(query.condition)
-    intConst(query.ssaName)
-  }
-  for (const fq of functionQueries) {
-    fq.assumptions.forEach(visit)
-    fq.constraints.forEach(visit)
-    fq.assertQueries.forEach((q) => {
-      q.assumptions.forEach(visit)
-      q.constraints.forEach(visit)
-      visit(q.assertion)
-    })
-    intConst(fq.paramSsaName)
-  }
+async function checkAssertQuery(
+  env: Z3Env,
+  query: IndexedAssertQuery,
+  extra: Z3Any[] = [],
+): Promise<{ valid: boolean; status: 'valid' | 'invalid' | 'unknown'; counterexample?: Record<string, string> }> {
+  const solver = new env.Solver()
+  addToSolver(solver, env.buildBoolList(query.assumptionIndices))
+  addToSolver(solver, env.buildBoolList(query.constraintIndices))
+  addToSolver(solver, extra)
+  const notAssert = (env.buildBoolAt(query.assertionIndex) as { not: () => Z3Any }).not()
+  solver.add(notAssert)
+  const status = await solverCheck(solver)
+  if (status === 'unsat') return { valid: true, status: 'valid' }
+  if (status === 'sat') return { valid: false, status: 'invalid', counterexample: env.modelValues(solver.model()) }
+  return { valid: false, status: 'unknown' }
+}
 
-  const modelValues = (model: { eval: (sym: Z3Any, modelCompletion: boolean) => Z3Any }) => {
-    const values: Record<string, string> = {}
-    for (const [name, sym] of intSymbols) values[name] = String(model.eval(sym, true))
-    for (const [name, sym] of boolSymbols) values[name] = String(model.eval(sym, true))
-    return values
-  }
+export async function solveVerification(z3: Z3HighLevel, payload: WorkerVerifyPayload): Promise<VerifyResult> {
+  solverChecks = 0
+  const env = new Z3Env(z3, payload.pool ?? [])
+  const queries = payload.queries ?? []
+  const domainQueries = payload.domainQueries ?? []
+  const functionQueries = payload.functionQueries ?? []
 
   const assertResults: VerifyResult['assertResults'] = []
 
   for (const query of queries) {
-    const valid = await checkAssertValid(ctx, buildBool, query)
-    if (valid) {
-      assertResults.push({ line: query.line, valid: true, status: 'valid', label: query.label })
-    } else {
-      const solver = new SolverCtor()
-      for (const assumption of query.assumptions) solver.add(buildBool(assumption))
-      for (const constraint of query.constraints) solver.add(buildBool(constraint))
-      solver.add((buildBool(query.assertion) as { not: () => Z3Any }).not())
-      const status = await solver.check()
-      if (status === 'sat') {
-        assertResults.push({
-          line: query.line,
-          valid: false,
-          status: 'invalid',
-          counterexample: modelValues(solver.model()),
-          label: query.label,
-        })
-      } else {
-        assertResults.push({ line: query.line, valid: false, status: 'unknown', label: query.label })
-      }
-    }
+    const outcome = await checkAssertQuery(env, query)
+    assertResults.push({
+      line: query.line,
+      valid: outcome.valid,
+      status: outcome.status,
+      counterexample: outcome.counterexample,
+      label: query.label,
+    })
   }
 
   const domainResults: VerifyResult['domainResults'] = []
 
   for (const query of domainQueries) {
-    const sym = intConst(query.ssaName)
+    const sym = env.intConst(query.ssaName)
     const symAr = sym as { neq: (o: Z3Any) => Z3Any }
     const values: string[] = []
-    const solver = new SolverCtor()
-    for (const assumption of query.assumptions) solver.add(buildBool(assumption))
-    for (const constraint of query.constraints) solver.add(buildBool(constraint))
-    solver.add(buildBool(query.condition))
+    const solver = new env.Solver()
+    addToSolver(solver, env.buildBoolList(query.assumptionIndices))
+    addToSolver(solver, env.buildBoolList(query.constraintIndices))
+    solver.add(env.buildBoolAt(query.conditionIndex))
 
     let truncated = false
     for (let i = 0; i < MAX_DOMAIN_VALUES; i++) {
-      const status = await solver.check()
+      const status = await solverCheck(solver)
       if (status !== 'sat') break
       const val = solver.model().eval(sym, true)
       values.push(String(val))
@@ -251,38 +268,51 @@ export async function solveVerification(z3: Z3HighLevel, payload: VerifyPayload)
 
   for (const fq of functionQueries) {
     const assertQueries = fq.assertQueries ?? []
-    const paramSym = intConst(fq.paramSsaName)
+    const paramSym = env.intConst(fq.paramSsaName)
     const paramAr = paramSym as { eq: (o: Z3Any) => Z3Any }
     const validInputs: string[] = []
 
-    for (let v = fq.paramMin; v <= fq.paramMax; v++) {
-      const pin = paramAr.eq(Int.val(v))
-      const solver = new SolverCtor()
-      for (const assumption of fq.assumptions) solver.add(buildBool(assumption))
-      for (const constraint of fq.constraints) solver.add(buildBool(constraint))
-      solver.add(pin)
-
-      if ((await solver.check()) === 'unsat') continue
-
-      let allValid = assertQueries.length === 0
-      for (const aq of assertQueries) {
-        if (!(await checkAssertValid(ctx, buildBool, aq, [pin]))) {
-          allValid = false
-          break
-        }
-      }
-      if (allValid) validInputs.push(String(v))
-    }
+    const baseAssumes = env.buildBoolList(fq.assumptionIndices)
+    const baseConstraints = env.buildBoolList(fq.constraintIndices)
 
     const fnAssertResults: VerifyResult['assertResults'] = []
     for (const aq of assertQueries) {
-      const valid = await checkAssertValid(ctx, buildBool, aq)
+      const outcome = await checkAssertQuery(env, aq)
       fnAssertResults.push({
         line: aq.line,
-        valid,
-        status: valid ? 'valid' : 'invalid',
+        valid: outcome.valid,
+        status: outcome.status,
         label: `[${fq.name}] ${aq.label}`,
       })
+    }
+
+    const baseSolver = new env.Solver()
+    addToSolver(baseSolver, baseAssumes)
+    addToSolver(baseSolver, baseConstraints)
+
+    for (let v = fq.paramMin; v <= fq.paramMax; v++) {
+      const pin = paramAr.eq(env.Int.val(v))
+      baseSolver.push()
+      baseSolver.add(pin)
+
+      if ((await solverCheck(baseSolver)) === 'unsat') {
+        baseSolver.pop()
+        continue
+      }
+
+      let allValid = assertQueries.length === 0
+      if (!allValid) {
+        for (const aq of assertQueries) {
+          const outcome = await checkAssertQuery(env, aq, [pin])
+          if (!outcome.valid) {
+            allValid = false
+            break
+          }
+        }
+      }
+
+      baseSolver.pop()
+      if (allValid) validInputs.push(String(v))
     }
 
     functionResults.push({
@@ -297,12 +327,12 @@ export async function solveVerification(z3: Z3HighLevel, payload: VerifyPayload)
 
   let finalModel: Record<string, string> | undefined
   if (queries.length > 0) {
-    const solver = new SolverCtor()
     const last = queries[queries.length - 1]
-    for (const assumption of last.assumptions) solver.add(buildBool(assumption))
-    for (const constraint of last.constraints) solver.add(buildBool(constraint))
-    const status = await solver.check()
-    if (status === 'sat') finalModel = modelValues(solver.model())
+    const solver = new env.Solver()
+    addToSolver(solver, env.buildBoolList(last.assumptionIndices))
+    addToSolver(solver, env.buildBoolList(last.constraintIndices))
+    const status = await solverCheck(solver)
+    if (status === 'sat') finalModel = env.modelValues(solver.model())
   }
 
   return {
@@ -310,8 +340,8 @@ export async function solveVerification(z3: Z3HighLevel, payload: VerifyPayload)
     domainResults,
     functionResults,
     finalModel,
-    debugConstraints: payload.debugConstraints ?? [],
-    loopTrace: payload.loopTrace ?? [],
+    debugConstraints: [],
+    loopTrace: [],
   }
 }
 

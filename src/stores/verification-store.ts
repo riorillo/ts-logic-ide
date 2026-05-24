@@ -3,10 +3,11 @@ import { createStore } from 'solid-js/store'
 import { isZ3Supported } from '@sigmasd/vite-plugin-z3/runtime'
 import { parseProgram } from '../core/parser/parse-program'
 import { buildVerificationPayload } from '../core/constraints/constraint-builder'
+import { compactForWorker } from '../core/solver/compact-payload'
 import { normalizeVerifyResult } from '../core/solver/normalize-result'
+import { runZ3Solve } from '../core/solver/z3-client'
 import type { AssertResult, LoopStep, ParseError, VerifyResult } from '../core/ir/types'
 import { DEFAULT_PROGRAM } from '../examples/default-program'
-import { z3Worker } from '../z3-workers'
 
 export type VerificationStatus = 'idle' | 'parsing' | 'solving' | 'done' | 'error'
 
@@ -25,6 +26,14 @@ function readLoopK(): number {
   const stored = localStorage.getItem(LOOP_K_KEY)
   const parsed = stored ? Number(stored) : 10
   return Number.isFinite(parsed) && parsed > 0 ? parsed : 10
+}
+
+function extractErrorMessage(err: unknown): string {
+  if (err instanceof Error) return err.message
+  if (typeof err === 'object' && err !== null && 'message' in err) {
+    return String((err as { message: unknown }).message)
+  }
+  return 'Z3 verification failed'
 }
 
 const [source, setSource] = createSignal(DEFAULT_PROGRAM)
@@ -76,11 +85,19 @@ export async function verify() {
   setState('status', 'solving')
 
   try {
-    const raw = await z3Worker.run(payload)
-    setState({ status: 'done', result: normalizeVerifyResult(raw as Partial<VerifyResult>) })
+    const workerPayload = compactForWorker(payload)
+    const raw = await runZ3Solve(workerPayload)
+    const normalized = normalizeVerifyResult(raw as Partial<VerifyResult>)
+    setState({
+      status: 'done',
+      result: {
+        ...normalized,
+        debugConstraints: payload.debugConstraints,
+        loopTrace: payload.loopTrace,
+      },
+    })
   } catch (err) {
-    const message = err instanceof Error ? err.message : 'Z3 verification failed'
-    setState({ status: 'error', buildError: message })
+    setState({ status: 'error', buildError: extractErrorMessage(err) })
   }
 }
 

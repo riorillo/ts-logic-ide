@@ -9,6 +9,7 @@ function z3WorkerDependencyPlugin(): Plugin {
   const workerEntry = 'src/workers/z3-worker.ts'
   const workerDeps = [
     'src/core/solver/encode.ts',
+    'src/core/solver/compact-payload.ts',
     'src/core/constraints/constraint-builder.ts',
   ]
   const workerOut = 'public/z3-worker.js'
