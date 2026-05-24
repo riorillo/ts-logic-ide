@@ -1,12 +1,14 @@
 export {
   DEFAULT_EXAMPLE_ID,
-  EXAMPLES,
   defaultExample,
+  defaultExampleSource,
   getExampleById,
+  getExamples,
   type ExampleProgram,
 } from './catalog'
 
-import { defaultExample } from './catalog'
+import { defaultExampleSource } from './catalog'
+import { readInitialLocale } from '../i18n/locale'
 
-/** Sorgente caricata all'avvio dell'IDE. */
-export const DEFAULT_PROGRAM = defaultExample().source
+/** Source loaded when the IDE starts. */
+export const DEFAULT_PROGRAM = defaultExampleSource(readInitialLocale())

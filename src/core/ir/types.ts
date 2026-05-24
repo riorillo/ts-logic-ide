@@ -43,6 +43,8 @@ export interface ParseError {
   line: number
   column: number
   message: string
+  code?: string
+  params?: Record<string, string | number>
 }
 
 export type Sort = 'int' | 'bool'

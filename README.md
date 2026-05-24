@@ -1,5 +1,7 @@
 # TS Logic IDE
 
+> **English:** [README.en.md](./README.en.md) · **Italiano:** questo file
+
 IDE web per la **verifica formale** di un sottoinsieme di TypeScript. Il codice viene tradotto in vincoli logici (SMT) e analizzato con **Z3** nel browser tramite WebAssembly e Web Worker. Il modello è simbolico (SSA, controllo di flusso path-sensitive): le proprietà sono espresse con `assert` e verificate mediante *proof by refutation*.
 
 ---
@@ -73,7 +75,9 @@ Monaco → ts-morph (parse) → IR → constraint builder (SSA) → Z3 worker �
 
 ## Esempi
 
-Catalogo in `src/examples/catalog.ts`, selezionabile da **Esempio**. All’avvio è caricato lo **Showcase** (sezioni A–J, commenti `ATTESO:`). Sono inclusi casi su assert, domain, funzioni, controllo di flusso e operatori logici.
+Catalogo in `src/examples/catalog-it.ts` e `catalog-en.ts`, selezionabile da **Esempio**. All’avvio è caricato lo **Showcase** (sezioni A–J, commenti `ATTESO:`). Sono inclusi casi su assert, domain, funzioni, controllo di flusso e operatori logici.
+
+L’interfaccia e gli esempi sono disponibili in **italiano** e **inglese** (pulsanti IT/EN nella toolbar).
 
 ---
 

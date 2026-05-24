@@ -9,6 +9,7 @@ import {
   type Statement,
 } from 'ts-morph'
 import type { ParseError } from '../ir/types'
+import { formatParseError, type ParseErrorCode } from '../../i18n/parse-errors'
 
 const ALLOWED_BIN_OPS = new Set([
   SyntaxKind.PlusToken,
@@ -61,16 +62,27 @@ function loc(node: Node): { line: number; column: number } {
   return { line: line + 1, column: column + 1 }
 }
 
-function error(node: Node, message: string, errors: ParseError[]) {
+function error(
+  node: Node,
+  code: ParseErrorCode,
+  errors: ParseError[],
+  params: Record<string, string | number> = {},
+) {
   const { line, column } = loc(node)
-  errors.push({ line, column, message })
+  errors.push({
+    line,
+    column,
+    code,
+    params,
+    message: formatParseError(code, params, 'en'),
+  })
 }
 
 function validateStatement(stmt: Statement, errors: ParseError[]) {
   const kind = stmt.getKind()
 
   if (FORBIDDEN_STMT_KINDS.has(kind)) {
-    error(stmt, `Unsupported statement: ${stmt.getKindName()}`, errors)
+    error(stmt, 'unsupportedStatement', errors, { kind: stmt.getKindName() })
     return
   }
 
@@ -96,7 +108,7 @@ function validateStatement(stmt: Statement, errors: ParseError[]) {
       }
       break
     default:
-      error(stmt, `Unsupported statement: ${stmt.getKindName()}`, errors)
+      error(stmt, 'unsupportedStatement', errors, { kind: stmt.getKindName() })
   }
 }
 
@@ -105,18 +117,18 @@ function validateVariableDeclarationList(
   errors: ParseError[],
 ) {
   if (list.getDeclarationKind() !== VariableDeclarationKind.Let) {
-    error(list, 'Only `let` declarations are supported', errors)
+    error(list, 'onlyLet', errors)
   }
 
   for (const decl of list.getDeclarations()) {
     const typeNode = decl.getTypeNode()
     const typeText = typeNode?.getText()
     if (typeText && typeText !== 'number' && typeText !== 'boolean') {
-      error(decl, `Unsupported type "${typeText}". Use number or boolean`, errors)
+      error(decl, 'unsupportedType', errors, { type: typeText })
     }
     const init = decl.getInitializer()
     if (!init && !typeNode) {
-      error(decl, 'Variable needs a type annotation or an initializer', errors)
+      error(decl, 'variableNeedsTypeOrInit', errors)
     }
     if (init) validateExpression(init, errors)
   }
@@ -145,29 +157,29 @@ function validateExpressionStatement(stmt: import('ts-morph').ExpressionStatemen
     }
   }
 
-  error(expr, 'Expected assignment, assume(...), assert(...), or domain(...)', errors)
+  error(expr, 'expectedAssignAssumeAssertDomain', errors)
 }
 
 function validateFunctionDeclaration(fn: import('ts-morph').FunctionDeclaration, errors: ParseError[]) {
   if (!fn.getName()) {
-    error(fn, 'Function must have a name', errors)
+    error(fn, 'functionMustHaveName', errors)
   }
 
   const retType = fn.getReturnTypeNode()?.getText()
   if (retType && retType !== 'number' && retType !== 'boolean') {
-    error(fn, `Unsupported return type "${retType}"`, errors)
+    error(fn, 'unsupportedReturnType', errors, { type: retType })
   }
 
   for (const param of fn.getParameters()) {
     const t = param.getTypeNode()?.getText()
     if (t && t !== 'number' && t !== 'boolean') {
-      error(param, `Unsupported parameter type "${t}"`, errors)
+      error(param, 'unsupportedParamType', errors, { type: t })
     }
   }
 
   const body = fn.getBody()
   if (!body || body.getKind() !== SyntaxKind.Block) {
-    error(fn, 'Function body must be a block', errors)
+    error(fn, 'functionBodyMustBeBlock', errors)
     return
   }
 
@@ -182,37 +194,37 @@ function validateFunctionDeclaration(fn: import('ts-morph').FunctionDeclaration,
     validateStatement(inner, errors)
   }
   if (!hasReturn) {
-    error(body, 'Function must contain a return statement', errors)
+    error(body, 'functionMustReturn', errors)
   }
 }
 
 function validateCallExpression(call: CallExpression, errors: ParseError[]) {
   const expr = call.getExpression()
   if (expr.getKind() !== SyntaxKind.Identifier) {
-    error(call, 'Only simple calls are supported', errors)
+    error(call, 'onlySimpleCalls', errors)
     return
   }
 
   const name = expr.getText()
   if (!BUILTIN_STMT_CALLS.has(name)) {
-    error(call, `Unsupported call "${name}". Use assume, assert, or domain`, errors)
+    error(call, 'unsupportedCall', errors, { name })
     return
   }
 
   if (name === 'domain') {
     if (call.getArguments().length !== 2) {
-      error(call, 'domain(var, expr) expects exactly 2 arguments', errors)
+      error(call, 'domainTwoArgs', errors)
       return
     }
     if (call.getArguments()[0].getKind() !== SyntaxKind.Identifier) {
-      error(call, 'domain() first argument must be a variable name', errors)
+      error(call, 'domainFirstArgVariable', errors)
     }
     validateExpression(call.getArguments()[1] as Expression, errors)
     return
   }
 
   if (call.getArguments().length !== 1) {
-    error(call, `${name}(...) expects exactly one argument`, errors)
+    error(call, 'builtinOneArg', errors, { name })
     return
   }
 
@@ -222,12 +234,12 @@ function validateCallExpression(call: CallExpression, errors: ParseError[]) {
 function validateUserCallExpression(call: CallExpression, errors: ParseError[]) {
   const expr = call.getExpression()
   if (expr.getKind() !== SyntaxKind.Identifier) {
-    error(call, 'Only simple function calls are supported', errors)
+    error(call, 'userCallOnlySimple', errors)
     return
   }
   const name = expr.getText()
   if (BUILTIN_EXPR_CALLS.has(name)) {
-    error(call, `"${name}" must be used as a top-level statement`, errors)
+    error(call, 'builtinTopLevel', errors, { name })
     return
   }
   for (const arg of call.getArguments()) {
@@ -293,7 +305,7 @@ function validateExpression(expr: Expression, errors: ParseError[]) {
       const unary = expr.asKindOrThrow(SyntaxKind.PostfixUnaryExpression)
       const op = unary.getOperatorToken()
       if (op !== SyntaxKind.PlusPlusToken && op !== SyntaxKind.MinusMinusToken) {
-        error(unary, 'Only ++ and -- are supported in postfix form', errors)
+        error(unary, 'postfixOnlyIncDec', errors)
       }
       validateExpression(unary.getOperand(), errors)
       return
@@ -301,7 +313,7 @@ function validateExpression(expr: Expression, errors: ParseError[]) {
     case SyntaxKind.PrefixUnaryExpression: {
       const unary = expr.asKindOrThrow(SyntaxKind.PrefixUnaryExpression)
       if (unary.getOperatorToken() !== SyntaxKind.MinusToken) {
-        error(unary, 'Only unary minus is supported', errors)
+        error(unary, 'unaryMinusOnly', errors)
       }
       validateExpression(unary.getOperand(), errors)
       return
@@ -313,14 +325,14 @@ function validateExpression(expr: Expression, errors: ParseError[]) {
       validateUserCallExpression(expr.asKindOrThrow(SyntaxKind.CallExpression), errors)
       return
     default:
-      error(expr, `Unsupported expression: ${expr.getKindName()}`, errors)
+      error(expr, 'unsupportedExpression', errors, { kind: expr.getKindName() })
   }
 }
 
 function validateBinaryExpression(bin: BinaryExpression, errors: ParseError[]) {
   const op = bin.getOperatorToken().getKind()
   if (!ALLOWED_BIN_OPS.has(op)) {
-    error(bin, `Unsupported operator "${bin.getOperatorToken().getText()}"`, errors)
+    error(bin, 'unsupportedOperator', errors, { op: bin.getOperatorToken().getText() })
   }
   validateExpression(bin.getLeft(), errors)
   validateExpression(bin.getRight(), errors)

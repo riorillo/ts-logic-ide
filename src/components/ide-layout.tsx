@@ -1,4 +1,5 @@
 import { type Component, createEffect, createSignal, onCleanup, onMount, Show } from 'solid-js'
+import { t } from '../i18n/messages'
 import { state } from '../stores/verification-store'
 import { EditorPanel } from './editor-panel'
 import { ResultsPanel } from './results-panel'
@@ -29,14 +30,14 @@ export const IdeLayout: Component = () => {
   return (
     <div class="ide-layout" classList={{ mobile: isMobile() }}>
       <Show when={isMobile()}>
-        <nav class="mobile-tab-bar" aria-label="Sezioni">
+        <nav class="mobile-tab-bar" aria-label={t('mobile.sectionsAria')}>
           <button
             type="button"
             class="mobile-tab"
             classList={{ active: mobileTab() === 'editor' }}
             onClick={() => setMobileTab('editor')}
           >
-            Code
+            {t('mobile.code')}
           </button>
           <button
             type="button"
@@ -44,7 +45,7 @@ export const IdeLayout: Component = () => {
             classList={{ active: mobileTab() === 'results' }}
             onClick={() => setMobileTab('results')}
           >
-            Results
+            {t('mobile.results')}
             <Show when={state.status === 'done' || state.status === 'error'}>
               <span class="mobile-tab-dot" aria-hidden="true" />
             </Show>

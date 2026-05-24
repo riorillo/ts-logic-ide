@@ -1,22 +1,25 @@
 import { type Component, For, Show } from 'solid-js'
 import type { LoopStep } from '../core/ir/types'
+import { t } from '../i18n/messages'
 
 interface Props {
   steps: LoopStep[]
 }
 
 export const LoopTrace: Component<Props> = (props) => {
+  const count = () => (props.steps ?? []).length
+
   return (
-    <Show when={(props.steps ?? []).length > 0}>
+    <Show when={count() > 0}>
       <section class="result-section collapsible">
         <details>
-          <summary>Loop trace ({(props.steps ?? []).length} steps)</summary>
+          <summary>{t('loop.trace', { count: count() })}</summary>
           <div class="loop-trace">
             <For each={props.steps ?? []}>
               {(step) => (
                 <div class="loop-step">
                   <div class="loop-step-header">
-                    Loop line {step.loopLine} — iteration {step.iteration}
+                    {t('loop.step', { line: step.loopLine, iteration: step.iteration })}
                   </div>
                   <pre>{formatVars(step.variables)}</pre>
                 </div>
