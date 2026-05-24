@@ -183,6 +183,104 @@ domain(coins, coins >= price);   // spesso solo 60: percorso già fissato
 `,
   },
   {
+    id: 'algoritmi-complessi',
+    title: '8 · Algoritmi: radice intera e MCD',
+    summary:
+      'Ricerca binaria + Euclide sottrattivo con for/if, funzioni, assert e domain. Bound K ≥ 12.',
+    source: `// =============================================================================
+// ALGORITMI — due procedure classiche senza array (solo number/boolean)
+// Verify con Bound K ≥ 12. Leggi gli "ATTESO:" sotto ogni blocco.
+// =============================================================================
+//
+// Subset usato: let, for (i < N), if/else, while/for annidati, assume, assert,
+// domain, function con chiamate top-level (evita più assume(f()) sullo stesso
+// parametro: l'inliner riusa __arg_x e può svuotare i domain() successivi).
+
+function squareLeq(m: number, n: number): boolean {
+  assume(m >= 0);
+  assume(n >= 0);
+  return m * m <= n;
+}
+
+function inRange(v: number, lo: number, hi: number): boolean {
+  assume(lo <= hi);
+  return v >= lo && v <= hi;
+}
+
+function nonNeg(x: number): boolean {
+  assume(x > 0);
+  return x > 0;
+}
+
+// ─── A. Radice intera di n (ricerca binaria) ────────────────────────────────
+// Cerca il massimo m con m*m <= n su [0, n]. Nessun array: solo lo, hi, ans.
+// m va dichiarato fuori dal ciclo; nel corpo del for usa if/else (non while
+// con chiamate a funzioni annidate, per non esplodere i vincoli Z3).
+
+let n: number = 35;
+assume(n >= 0);
+let lo: number = 0;
+let hi: number = n;
+let ans: number = 0;
+let m: number = 0;
+
+for (let step = 0; step < 6; step++) {
+  if (lo <= hi) {
+    m = (lo + hi) / 2;
+    if (m * m <= n) {
+      ans = m;
+      lo = m + 1;
+    } else {
+      hi = m - 1;
+    }
+  }
+}
+
+assert(ans == 5);
+assert(squareLeq(ans, n));
+// ATTESO assert: VALID (floor(sqrt(35)) = 5)
+// ATTESO Functions squareLeq: molti (m, n) con m >= 0, n >= 0
+
+// ─── B. MCD — Euclide sottrattivo ───────────────────────────────────────────
+// Ripete sottrazioni finché b > 0. Con (48, 18) converge in ≤ 12 passi.
+
+let a: number = 48;
+let b: number = 18;
+assume(a >= 0);
+assume(b >= 0);
+
+for (let t = 0; t < 12; t++) {
+  if (b > 0) {
+    if (a > b) {
+      a = a - b;
+    } else {
+      b = b - a;
+    }
+  }
+}
+
+assert(a == 6);
+assert(b == 0);
+assert(inRange(a, 0, 48));
+// ATTESO assert: VALID (MCD = 6)
+// ATTESO Functions inRange: tutti i v in [-K,K] con lo, hi liberi e lo <= hi
+
+// ─── C. Domain: quali k hanno k^2 <= n ? ────────────────────────────────────
+
+let k: number;
+assume(k >= 0);
+assume(k <= 8);
+domain(k, k * k <= n);
+// n = 35  →  k^2 <= 35  →  k ∈ {0, 1, 2, 3, 4, 5}
+// ATTESO Domains k: 0, 1, 2, 3, 4, 5
+
+assert(ans + a == 11);
+// ATTESO: VALID (5 + 6 = 11)
+
+// Pannello Functions: nonNeg → 1, 2, …, K (primo param number positivo)
+`,
+  },
+  {
     id: 'laboratorio-intricato',
     title: '★ Showcase — laboratorio completo',
     summary:

@@ -181,6 +181,104 @@ domain(coins, coins >= price);   // often only 60: path already fixed
 `,
   },
   {
+    id: 'algoritmi-complessi',
+    title: '8 · Algorithms: integer sqrt and GCD',
+    summary:
+      'Binary search + subtractive Euclid with for/if, functions, assert and domain. Bound K ≥ 12.',
+    source: `// =============================================================================
+// ALGORITHMS — two classic procedures without arrays (number/boolean only)
+// Verify with Bound K ≥ 12. Read "EXPECTED:" under each block.
+// =============================================================================
+//
+// Subset used: let, for (i < N), if/else, nested for/if, assume, assert,
+// domain, top-level function calls (avoid multiple assume(f()) on the same
+// parameter name: the inliner reuses __arg_x and can empty later domain()).
+
+function squareLeq(m: number, n: number): boolean {
+  assume(m >= 0);
+  assume(n >= 0);
+  return m * m <= n;
+}
+
+function inRange(v: number, lo: number, hi: number): boolean {
+  assume(lo <= hi);
+  return v >= lo && v <= hi;
+}
+
+function nonNeg(x: number): boolean {
+  assume(x > 0);
+  return x > 0;
+}
+
+// ─── A. Integer square root of n (binary search) ─────────────────────────────
+// Find the largest m with m*m <= n on [0, n]. No arrays: only lo, hi, ans.
+// Declare m outside the loop; use if/else in the for body (not while with
+// nested function calls, to keep Z3 constraints tractable).
+
+let n: number = 35;
+assume(n >= 0);
+let lo: number = 0;
+let hi: number = n;
+let ans: number = 0;
+let m: number = 0;
+
+for (let step = 0; step < 6; step++) {
+  if (lo <= hi) {
+    m = (lo + hi) / 2;
+    if (m * m <= n) {
+      ans = m;
+      lo = m + 1;
+    } else {
+      hi = m - 1;
+    }
+  }
+}
+
+assert(ans == 5);
+assert(squareLeq(ans, n));
+// EXPECTED assert: VALID (floor(sqrt(35)) = 5)
+// EXPECTED Functions squareLeq: many (m, n) with m >= 0, n >= 0
+
+// ─── B. GCD — subtractive Euclid ────────────────────────────────────────────
+// Repeat subtractions while b > 0. With (48, 18) it converges in ≤ 12 steps.
+
+let a: number = 48;
+let b: number = 18;
+assume(a >= 0);
+assume(b >= 0);
+
+for (let t = 0; t < 12; t++) {
+  if (b > 0) {
+    if (a > b) {
+      a = a - b;
+    } else {
+      b = b - a;
+    }
+  }
+}
+
+assert(a == 6);
+assert(b == 0);
+assert(inRange(a, 0, 48));
+// EXPECTED assert: VALID (GCD = 6)
+// EXPECTED Functions inRange: all v in [-K,K] with free lo, hi and lo <= hi
+
+// ─── C. Domain: which k satisfy k^2 <= n ? ───────────────────────────────────
+
+let k: number;
+assume(k >= 0);
+assume(k <= 8);
+domain(k, k * k <= n);
+// n = 35  →  k^2 <= 35  →  k ∈ {0, 1, 2, 3, 4, 5}
+// EXPECTED Domains k: 0, 1, 2, 3, 4, 5
+
+assert(ans + a == 11);
+// EXPECTED: VALID (5 + 6 = 11)
+
+// Functions panel: nonNeg → 1, 2, …, K (first number param must be positive)
+`,
+  },
+  {
     id: 'laboratorio-intricato',
     title: '★ Showcase — full lab',
     summary:

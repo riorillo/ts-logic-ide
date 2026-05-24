@@ -289,10 +289,11 @@ class ExecutionState {
     this.mergeQueriesFrom(thenState)
     this.mergeQueriesFrom(elseState)
 
-    for (const c of thenState.constraints.slice(this.constraints.length)) {
+    const constraintBase = this.constraints.length
+    for (const c of thenState.constraints.slice(constraintBase)) {
       this.addConstraint(implies(cond, c))
     }
-    for (const c of elseState.constraints.slice(this.constraints.length)) {
+    for (const c of elseState.constraints.slice(constraintBase)) {
       this.addConstraint(implies({ op: 'not', arg: cond }, c))
     }
 
@@ -301,17 +302,33 @@ class ExecutionState {
       const preVer = pre.get(name)
       const thenVer = thenVersions.get(name) ?? preVer
       const elseVer = elseVersions.get(name) ?? preVer
-      if (thenVer !== elseVer) {
-        const sort = this.ctx.sortOf(name)
-        const merged = this.ctx.fresh(name)
-        const thenRef = thenVer !== undefined ? { op: 'const' as const, name: this.ctx.ssaName(name, thenVer), sort } : this.evalExpr({ kind: 'var', name })
-        const elseRef = elseVer !== undefined ? { op: 'const' as const, name: this.ctx.ssaName(name, elseVer), sort } : this.evalExpr({ kind: 'var', name })
-        this.addConstraint({
-          op: 'eq',
-          left: { op: 'const', name: merged, sort },
-          right: { op: 'ite', cond, then: thenRef, else: elseRef },
-        })
+      const thenChanged = thenVer !== preVer
+      const elseChanged = elseVer !== preVer
+      if (!thenChanged && !elseChanged) continue
+
+      const maxVer = Math.max(preVer ?? -1, thenVer ?? -1, elseVer ?? -1)
+      const currentVer = this.ctx.versions.get(name)
+      if (currentVer === undefined || currentVer < maxVer) {
+        this.ctx.versions.set(name, maxVer)
       }
+
+      const sort = this.ctx.sortOf(name)
+      const merged = this.ctx.fresh(name)
+      const preRef =
+        preVer !== undefined
+          ? { op: 'const' as const, name: this.ctx.ssaName(name, preVer), sort }
+          : this.evalExpr({ kind: 'var', name })
+      const thenRef = thenChanged
+        ? { op: 'const' as const, name: this.ctx.ssaName(name, thenVer!), sort }
+        : preRef
+      const elseRef = elseChanged
+        ? { op: 'const' as const, name: this.ctx.ssaName(name, elseVer!), sort }
+        : preRef
+      this.addConstraint({
+        op: 'eq',
+        left: { op: 'const', name: merged, sort },
+        right: { op: 'ite', cond, then: thenRef, else: elseRef },
+      })
     }
   }
 
