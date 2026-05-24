@@ -44,13 +44,13 @@ export const EditorPanel: Component<Props> = (props) => {
   return (
     <>
       <div class="toolbar">
-        <div class="toolbar-left">
+        {/* <div class="toolbar-left">
           <h1>TS Logic IDE</h1>
           <span class="subtitle">TypeScript → Z3 SMT</span>
-        </div>
+        </div> */}
         <div class="toolbar-controls">
           <label class="example-control">
-            <span class="control-label">Esempio</span>
+            <span class="control-label">Example</span>
             <select
               value={exampleId()}
               onChange={(e) => loadExample(e.currentTarget.value)}

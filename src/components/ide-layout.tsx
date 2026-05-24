@@ -7,7 +7,9 @@ type MobileTab = 'editor' | 'results'
 
 export const IdeLayout: Component = () => {
   const [mobileTab, setMobileTab] = createSignal<MobileTab>('editor')
-  const [isMobile, setIsMobile] = createSignal(false)
+  const [isMobile, setIsMobile] = createSignal(
+    typeof window !== 'undefined' && window.matchMedia('(max-width: 768px)').matches,
+  )
 
   onMount(() => {
     const mq = window.matchMedia('(max-width: 768px)')
@@ -25,7 +27,7 @@ export const IdeLayout: Component = () => {
   })
 
   return (
-    <div class="ide-layout">
+    <div class="ide-layout" classList={{ mobile: isMobile() }}>
       <Show when={isMobile()}>
         <nav class="mobile-tab-bar" aria-label="Sezioni">
           <button
@@ -34,7 +36,7 @@ export const IdeLayout: Component = () => {
             classList={{ active: mobileTab() === 'editor' }}
             onClick={() => setMobileTab('editor')}
           >
-            Codice
+            Code
           </button>
           <button
             type="button"
@@ -42,7 +44,7 @@ export const IdeLayout: Component = () => {
             classList={{ active: mobileTab() === 'results' }}
             onClick={() => setMobileTab('results')}
           >
-            Risultati
+            Results
             <Show when={state.status === 'done' || state.status === 'error'}>
               <span class="mobile-tab-dot" aria-hidden="true" />
             </Show>

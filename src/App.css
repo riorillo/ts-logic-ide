@@ -431,6 +431,47 @@ details summary {
 }
 
 @media (max-width: 768px) {
+  .ide-main {
+    grid-template-columns: 1fr;
+    grid-template-rows: 1fr;
+  }
+
+  .mobile .ide-main > .results-panel.panel-active {
+    display: flex;
+    flex-direction: column;
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .results-content {
+    flex: 1;
+    min-height: 0;
+  }
+
+  .mobile .ide-main > .editor-panel,
+  .mobile .ide-main > .results-panel {
+    grid-column: 1;
+    grid-row: 1;
+    width: 100%;
+    min-height: 0;
+  }
+
+  .mobile .ide-main > .editor-panel:not(.panel-active),
+  .mobile .ide-main > .results-panel:not(.panel-active) {
+    display: none !important;
+  }
+
+  .mobile .editor-container {
+    flex: 1;
+    min-height: 0;
+    height: 100%;
+  }
+
+  .mobile .editor-container > * {
+    height: 100%;
+    min-height: 200px;
+  }
+
   .toolbar-left .subtitle {
     display: none;
   }

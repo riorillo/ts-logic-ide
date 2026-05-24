@@ -5,7 +5,7 @@ import { LoopTrace } from './loop-trace'
 
 export const ResultsPanel: Component = () => {
   return (
-    <div class="results-panel">
+    <div class="results-content">
       <h2>Z3 Results</h2>
 
       <Show when={!state.z3Supported}>
