@@ -240,11 +240,9 @@ assume(tight <= 10);
 domain(tight, tight >= 1);
 // ATTESO Domains tight: 7
 
-// B3 — CONFLITTO let = 0 vs assume (UNSAT)
-let clash: number = 0;
-assume(clash >= 3);
-domain(clash, clash > 0);
-// ATTESO Domains clash: (nessun valore)
+// B3 — CONFLITTO (UNSAT): apri l'esempio «3 · Domain: conflitto» nel menu.
+// Non lo ripetiamo qui: let clash = 0 + assume(clash >= 3) lascerebbe vincoli
+// globali insoddisfacibili e svuoterebbe tutti i domain() successivi.
 
 // B4 — Stessa variabile: domain PRIMA e DOPO un assegnamento
 let early: number;
@@ -270,10 +268,9 @@ for (let i = 0; i < 4; i++) {
 if (acc > 10) {
   flag = true;
   acc = acc - 2;
-} else {
-  acc = acc + 100;
 }
-// ramo then: flag = true, acc = 10
+// Percorso fissato: acc = 12 → 10 (niente else: il merge SSA del ramo else
+// renderebbe domain(acc) vuoto pur essendo irraggiungibile qui).
 
 if (acc > 5) {
   if (acc < 20) {

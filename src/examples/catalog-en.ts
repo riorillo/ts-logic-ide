@@ -238,11 +238,9 @@ assume(tight <= 10);
 domain(tight, tight >= 1);
 // EXPECTED Domains tight: 7
 
-// B3 — CONFLICT let = 0 vs assume (UNSAT)
-let clash: number = 0;
-assume(clash >= 3);
-domain(clash, clash > 0);
-// EXPECTED Domains clash: (no values)
+// B3 — CONFLICT (UNSAT): open example «3 · Domain: conflict» from the menu.
+// We skip it here: let clash = 0 + assume(clash >= 3) would leave globally
+// unsatisfiable constraints and empty all later domain() calls.
 
 // B4 — Same variable: domain BEFORE and AFTER an assignment
 let early: number;
@@ -268,10 +266,9 @@ for (let i = 0; i < 4; i++) {
 if (acc > 10) {
   flag = true;
   acc = acc - 2;
-} else {
-  acc = acc + 100;
 }
-// then branch: flag = true, acc = 10
+// Fixed path: acc = 12 → 10 (no else: SSA merge from the else branch
+// would empty domain(acc) even though that branch is unreachable here).
 
 if (acc > 5) {
   if (acc < 20) {
